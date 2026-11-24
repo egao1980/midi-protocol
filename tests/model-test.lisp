@@ -1,0 +1,126 @@
+;;;; MIDI0 model: types, immutability, readable printing, COPY-EVENT.
+
+(in-package #:midi-protocol/tests)
+
+(deftest-parametrize event-types
+    ((event parents not-parents)
+     ((make-note-off-event) '(channel-event midi-event) '(meta-event))
+     ((make-note-on-event) '(channel-event midi-event) '(meta-event))
+     ((make-poly-pressure-event) '(channel-event midi-event) '(meta-event))
+     ((make-control-change-event) '(channel-event midi-event) '(meta-event))
+     ((make-program-change-event) '(channel-event midi-event) '(meta-event))
+     ((make-channel-pressure-event) '(channel-event midi-event) '(meta-event))
+     ((make-pitch-bend-event) '(channel-event midi-event) '(meta-event))
+     ((make-sysex-event) '(midi-event) '(channel-event meta-event escape-event))
+     ((make-escape-event) '(midi-event) '(channel-event meta-event sysex-event))
+     ((make-sequence-number-event) '(meta-event midi-event) '(text-meta-event))
+     ((make-text-event) '(text-meta-event meta-event midi-event) '(channel-event))
+     ((make-copyright-event) '(text-meta-event meta-event) '())
+     ((make-track-name-event) '(text-meta-event meta-event) '())
+     ((make-instrument-name-event) '(text-meta-event meta-event) '())
+     ((make-lyric-event) '(text-meta-event meta-event) '())
+     ((make-marker-event) '(text-meta-event meta-event) '())
+     ((make-cue-point-event) '(text-meta-event meta-event) '())
+     ((make-program-name-event) '(text-meta-event meta-event) '())
+     ((make-device-name-event) '(text-meta-event meta-event) '())
+     ((make-channel-prefix-event) '(meta-event) '(channel-event text-meta-event))
+     ((make-midi-port-event) '(meta-event) '(text-meta-event))
+     ((make-end-of-track-event) '(meta-event midi-event) '(text-meta-event))
+     ((make-tempo-event) '(meta-event) '(text-meta-event))
+     ((make-smpte-offset-event) '(meta-event) '(text-meta-event))
+     ((make-time-signature-event) '(meta-event) '(text-meta-event))
+     ((make-key-signature-event) '(meta-event) '(text-meta-event))
+     ((make-sequencer-specific-event) '(meta-event) '(text-meta-event))
+     ((make-unknown-meta-event) '(meta-event) '(text-meta-event)))
+  (let ((e event))
+    (ok (every (lambda (type) (typep e type)) parents) (format nil "~S is ~S" e parents))
+    (ok (notany (lambda (type) (typep e type)) not-parents))))
+
+(deftest defaults
+  (ok (= 0 (midi-event-delta (make-note-on-event))))
+  (ok (= 0 (channel-event-channel (make-note-on-event))))
+  (ok (= 64 (note-on-event-velocity (make-note-on-event))))
+  (ok (= 64 (note-off-event-velocity (make-note-off-event))))
+  (ok (= 0 (pitch-bend-event-value (make-pitch-bend-event))))
+  (ok (= 500000 (tempo-event-tempo (make-tempo-event)) +default-tempo+))
+  (ok (equal '(4 4 24 8)
+             (let ((ts (make-time-signature-event)))
+               (list (time-signature-event-numerator ts) (time-signature-event-denominator ts)
+                     (time-signature-event-clocks-per-click ts)
+                     (time-signature-event-thirty-seconds-per-quarter ts)))))
+  (ok (equal '(0 nil) (let ((k (make-key-signature-event)))
+                        (list (key-signature-event-sharps k) (key-signature-event-minor-p k)))))
+  (ok (string= "" (text-meta-event-text (make-lyric-event))))
+  (ok (= 0 (length (sysex-event-data (make-sysex-event)))))
+  (let ((smf (make-smf)))
+    (ok (= 1 (smf-format smf)))
+    (ok (= 480 (smf-division smf)))
+    (ok (null (smf-tracks smf))))
+  (ok (equalp (make-smpte-division :frames-per-second 25 :ticks-per-frame 40)
+              (make-smpte-division))))
+
+(deftest inherited-accessors
+  (let ((e (make-lyric-event :delta 7 :text "la")))
+    (ok (= 7 (midi-event-delta e)))
+    (ok (string= "la" (text-meta-event-text e))))
+  (ok (= 9 (channel-event-channel (make-program-change-event :channel 9 :program 0))))
+  (ok (= 3 (channel-prefix-event-channel (make-channel-prefix-event :channel 3)))))
+
+(deftest values-are-immutable
+  (dolist (accessor '(midi-event-delta channel-event-channel note-on-event-key
+                      note-on-event-velocity text-meta-event-text tempo-event-tempo
+                      sysex-event-data key-signature-event-sharps smf-tracks smf-format
+                      smf-division smpte-division-ticks-per-frame unknown-meta-event-type))
+    (ok (not (fboundp `(setf ,accessor))) (format nil "no (SETF ~A)" accessor)))
+  (dolist (copier '(copy-midi-event copy-note-on-event copy-smf copy-tempo-event))
+    (ok (not (fboundp (find-symbol (symbol-name copier) '#:midi-protocol)))
+        (format nil "no ~A" copier))))
+
+(deftest values-print-readably
+  (let ((*package* (find-package '#:midi-protocol/tests)))
+    (dolist (x (list (make-note-on-event :delta 10 :channel 2 :key 61 :velocity 99)
+                     (make-pitch-bend-event :value -8192)
+                     (make-sysex-event :data (octets #x7E #x7F #x09 #x01 #xF7))
+                     (make-lyric-event :text "Glo-")
+                     (make-key-signature-event :sharps -3 :minor-p t)
+                     (make-sequence-number-event :number nil)
+                     (make-unknown-meta-event :type #x60 :data #(1 2 3))
+                     (make-smf :format 0 :division (make-smpte-division :frames-per-second 29
+                                                                         :ticks-per-frame 80)
+                               :tracks (list (list (make-end-of-track-event :delta 3))))))
+      (ok (equalp x (read-from-string (prin1-to-string x))) (prin1-to-string x)))))
+
+(deftest data-slots-compare-by-content
+  (ok (equalp (make-sysex-event :data #(1 2 #xF7)) (make-sysex-event :data (octets 1 2 #xF7))))
+  (ok (not (equalp (make-text-event :text "a") (make-lyric-event :text "a")))))
+
+;;; COPY-EVENT -----------------------------------------------------------------
+
+(deftest-parametrize copy-event-replaces-slots
+    ((event initargs expected)
+     ((make-note-on-event :delta 5 :channel 1 :key 60 :velocity 90) '(:delta 0)
+      (make-note-on-event :delta 0 :channel 1 :key 60 :velocity 90))
+     ((make-note-on-event :delta 5 :channel 1 :key 60 :velocity 90) '(:channel 9 :key 36)
+      (make-note-on-event :delta 5 :channel 9 :key 36 :velocity 90))
+     ((make-lyric-event :delta 3 :text "la") '(:text "lo")
+      (make-lyric-event :delta 3 :text "lo"))
+     ((make-tempo-event :tempo 600000) '(:delta 480)
+      (make-tempo-event :delta 480 :tempo 600000))
+     ((make-end-of-track-event :delta 1) '(:delta 96)
+      (make-end-of-track-event :delta 96))
+     ((make-unknown-meta-event :type #x60 :data #(1)) '(:data #(2 3))
+      (make-unknown-meta-event :type #x60 :data #(2 3)))
+     ((make-sysex-event :delta 1 :data #(1 #xF7)) '()
+      (make-sysex-event :delta 1 :data #(1 #xF7))))
+  (let* ((e event)
+         (copy (apply #'copy-event e initargs)))
+    (ok (equalp expected copy))
+    (ok (eq (type-of e) (type-of copy)))
+    (ok (not (eq e copy)) "a fresh object")))
+
+(deftest copy-event-leaves-the-original
+  (let* ((e (make-control-change-event :delta 4 :channel 2 :controller 7 :value 100))
+         (copy (copy-event e :value 50)))
+    (ok (= 50 (control-change-event-value copy)))
+    (ok (= 100 (control-change-event-value e)))
+    (ok (signals (copy-event e :tempo 1) 'error) "no TEMPO slot")))
