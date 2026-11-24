@@ -49,31 +49,73 @@
 
 (defun track-to-absolute (track)
   "A fresh list of (TICK . EVENT), one per event of TRACK, in order."
-  (declare (ignorable track))
-  (%midi0-pending 'track-to-absolute))
+  (let ((tick 0))
+    (mapcar (lambda (event) (cons (incf tick (midi-event-delta event)) event))
+            track)))
 
 (defun track-from-absolute (timed-events)
   "A track from (TICK . EVENT) conses in any order: stable-sorted by tick,
 END-OF-TRACK-EVENTs dropped, deltas recomputed, and one END-OF-TRACK-EVENT
 appended at the largest tick (see the file header)."
-  (declare (ignorable timed-events))
-  (%midi0-pending 'track-from-absolute))
+  (let ((last-tick (reduce #'max timed-events :key #'car :initial-value 0))
+        (previous 0)
+        (track '()))
+    (dolist (timed (stable-sort (copy-list timed-events) #'< :key #'car))
+      (destructuring-bind (tick . event) timed
+        (unless (end-of-track-event-p event)
+          (let ((delta (- tick previous)))
+            (push (if (eql delta (midi-event-delta event))
+                      event
+                      (copy-event event :delta delta))
+                  track)
+            (setf previous tick)))))
+    (push (make-end-of-track-event :delta (- last-tick previous)) track)
+    (nreverse track)))
+
+(defun %merged-timed-events (tracks)
+  "Every event of TRACKS as (TICK . EVENT), in merged order: by tick, then
+track order, then order in the track."
+  (stable-sort (loop for track in tracks nconc (track-to-absolute track)) #'< :key #'car))
 
 (defun merge-tracks (tracks)
   "One track holding every event of TRACKS at its absolute time; ties keep
 track order. Ends with one END-OF-TRACK-EVENT at the latest tick."
-  (declare (ignorable tracks))
-  (%midi0-pending 'merge-tracks))
+  (track-from-absolute (loop for track in tracks nconc (track-to-absolute track))))
 
 (defun tempo-map (source)
   "The (TICK . MICROSECONDS-PER-QUARTER) entries of SOURCE, an SMF or a track,
 starting at tick 0 (see the file header)."
-  (declare (ignorable source))
-  (%midi0-pending 'tempo-map))
+  (let ((map '()))
+    (dolist (timed (etypecase source
+                     (smf (%merged-timed-events (smf-tracks source)))
+                     (list (track-to-absolute source))))
+      (destructuring-bind (tick . event) timed
+        (when (tempo-event-p event)
+          (if (and map (= tick (car (first map))))
+              (setf (cdr (first map)) (tempo-event-tempo event))
+              (push (cons tick (tempo-event-tempo event)) map)))))
+    (setf map (nreverse map))
+    (if (and map (zerop (car (first map))))
+        map
+        (cons (cons 0 +default-tempo+) map))))
 
 (defun ticks-to-seconds (ticks division &optional tempo-map)
   "Exact seconds (a rational) at absolute tick TICKS, for DIVISION (ticks per
 quarter note, or an SMPTE-DIVISION) and TEMPO-MAP (from TEMPO-MAP; NIL means
 120 quarter notes per minute throughout)."
-  (declare (ignorable ticks division tempo-map))
-  (%midi0-pending 'ticks-to-seconds))
+  (check-type ticks (integer 0))
+  (etypecase division
+    (smpte-division
+     (let ((fps (smpte-division-frames-per-second division)))
+       (/ ticks (* (if (= fps 29) 30000/1001 fps)
+                   (smpte-division-ticks-per-frame division)))))
+    ((integer 1)
+     (let ((map (if (and tempo-map (zerop (car (first tempo-map))))
+                    tempo-map
+                    ;; Before the map's first entry (or with no map) the
+                    ;; default tempo holds.
+                    (cons (cons 0 +default-tempo+) tempo-map))))
+       (loop for ((start . tempo) next) on map
+             while (< start ticks)
+             sum (/ (* (- (if next (min ticks (car next)) ticks) start) tempo)
+                    (* 1000000 division)))))))

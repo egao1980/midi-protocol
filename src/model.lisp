@@ -228,6 +228,59 @@ quarter note."
 SMPTE division the high byte is the negated rate as a signed byte (#xE8 = -24,
 #xE7 = -25, #xE3 = -29, #xE2 = -30).")
 
+(defparameter +event-initargs+
+  '((note-off-event :channel :key :velocity)
+    (note-on-event :channel :key :velocity)
+    (poly-pressure-event :channel :key :pressure)
+    (control-change-event :channel :controller :value)
+    (program-change-event :channel :program)
+    (channel-pressure-event :channel :pressure)
+    (pitch-bend-event :channel :value)
+    (sysex-event :data)
+    (escape-event :data)
+    (sequence-number-event :number)
+    (text-event :text) (copyright-event :text) (track-name-event :text)
+    (instrument-name-event :text) (lyric-event :text) (marker-event :text)
+    (cue-point-event :text) (program-name-event :text) (device-name-event :text)
+    (channel-prefix-event :channel)
+    (midi-port-event :port)
+    (end-of-track-event)
+    (tempo-event :tempo)
+    (smpte-offset-event :frame-rate :hours :minutes :seconds :frames :subframes)
+    (time-signature-event :numerator :denominator :clocks-per-click
+                          :thirty-seconds-per-quarter)
+    (key-signature-event :sharps :minor-p)
+    (sequencer-specific-event :data)
+    (unknown-meta-event :type :data))
+  "(struct initarg...) for every concrete event type: its constructor keywords
+besides :DELTA, which every event has. Each initarg is a slot name.")
+
+;;; Constructors and slot readers by type, from +EVENT-INITARGS+ and the names
+;;; DEFSTRUCT gives them: MAKE-<TYPE>, and <TYPE>-<SLOT> for every slot, the
+;;; included ones too (CLHS DEFSTRUCT :INCLUDE). A missing name fails the load.
+
+(defun %struct-function (&rest name-parts)
+  (let* ((name (apply #'concatenate 'string (mapcar #'string name-parts)))
+         (symbol (find-symbol name '#:midi-protocol)))
+    (unless (and symbol (fboundp symbol))
+      (error "midi-protocol: no function ~A for +EVENT-INITARGS+" name))
+    (fdefinition symbol)))
+
+(defparameter *event-layouts*
+  (let ((table (make-hash-table :test 'eq)))
+    (loop for (type . initargs) in +event-initargs+
+          do (setf (gethash type table)
+                   (cons (%struct-function "MAKE-" type)
+                         (loop for key in (cons :delta initargs)
+                               collect (cons key (%struct-function type "-" key))))))
+    table)
+  "Event type -> (constructor . ((initarg . reader) ...)), :DELTA first.")
+
+(defun %event-constructor (type)
+  "The keyword constructor MAKE-<TYPE> of the concrete event type TYPE."
+  (car (or (gethash type *event-layouts*)
+           (error 'midi-error :reason (format nil "~S is not a concrete event type" type)))))
+
 ;;; Copying --------------------------------------------------------------------
 
 (defun copy-event (event &rest initargs)
@@ -235,5 +288,20 @@ SMPTE division the high byte is the negated rate as a signed byte (#xE8 = -24,
 INITARGS, which are constructor keywords and values (:DELTA 0, :CHANNEL 9,
 :TEXT \"Fine\", ...). With no INITARGS the copy is EQUALP to EVENT. An initarg
 that names no slot of EVENT's type signals an ERROR."
-  (declare (ignorable event initargs))
-  (%midi0-pending 'copy-event))
+  (check-type event midi-event)
+  (let ((layout (gethash (type-of event) *event-layouts*)))
+    (unless layout
+      (error 'midi-error :reason (format nil "can't copy an event of type ~S" (type-of event))))
+    (when (oddp (length initargs))
+      (error 'midi-error :reason (format nil "odd number of initargs: ~S" initargs)))
+    (destructuring-bind (constructor . readers) layout
+      (loop for key in initargs by #'cddr
+            unless (assoc key readers)
+              do (error 'midi-error
+                        :reason (format nil "~S names no slot of ~S" key (type-of event))))
+      ;; The leftmost of two equal keywords wins (CLHS 3.4.1.4), so INITARGS
+      ;; override the copied slots.
+      (apply constructor
+             (append initargs
+                     (loop for (key . reader) in readers
+                           nconc (list key (funcall reader event))))))))

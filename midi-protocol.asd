@@ -8,6 +8,7 @@
   :serial t
   :components ((:file "package")
                (:file "conditions")
+               (:file "octets")
                (:file "model")
                (:file "time")
                (:file "read")

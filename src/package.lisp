@@ -90,10 +90,3 @@ TICKS-TO-SECONDS work with absolute time.")
    ;; Absolute time (time.lisp)
    #:track-to-absolute #:track-from-absolute #:merge-tracks
    #:tempo-map #:ticks-to-seconds))
-
-(in-package #:midi-protocol)
-
-(defun %midi0-pending (name)
-  "Contract stub for slice MIDI0. Every call is replaced by the implementation,
-then this function is deleted."
-  (error "midi-protocol MIDI0 pending: ~A" name))
